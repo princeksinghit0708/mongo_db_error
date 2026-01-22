@@ -15,6 +15,19 @@ from error_analyzer import ErrorAnalyzer
 from predictive_analytics import PredictiveAnalytics
 from visualizer import ErrorVisualizer
 
+# Optional storage modules
+try:
+    from sqlite_store import SQLiteStore
+    HAS_SQLITE = True
+except ImportError:
+    HAS_SQLITE = False
+
+try:
+    from vector_store import VectorStore
+    HAS_VECTOR_DB = True
+except ImportError:
+    HAS_VECTOR_DB = False
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -26,7 +39,9 @@ class ErrorAnalysisPipeline:
     """Main pipeline for error analysis and predictive analytics"""
     
     def __init__(self, connection_string: str, database_name: str, 
-                 gemini_api_key: Optional[str] = None):
+                 gemini_api_key: Optional[str] = None,
+                 use_sqlite: bool = True,
+                 use_vector_db: bool = False):
         """
         Initialize the pipeline
         
@@ -34,15 +49,27 @@ class ErrorAnalysisPipeline:
             connection_string: MongoDB connection string
             database_name: Name of the database
             gemini_api_key: Optional Google Gemini API key for LLM analysis
+            use_sqlite: Whether to store data in SQLite (default: True)
+            use_vector_db: Whether to use vector DB for semantic search (default: False)
         """
         self.connection_string = connection_string
         self.database_name = database_name
         self.gemini_api_key = gemini_api_key
+        self.use_sqlite = use_sqlite and HAS_SQLITE
+        self.use_vector_db = use_vector_db and HAS_VECTOR_DB
         
         self.connector = None
         self.analyzer = None
         self.predictor = None
         self.visualizer = ErrorVisualizer()
+        self.sqlite_store = None
+        self.vector_store = None
+        
+        # Initialize storage if requested
+        if self.use_sqlite:
+            self.sqlite_store = SQLiteStore()
+        if self.use_vector_db:
+            self.vector_store = VectorStore(db_type="chroma")
         
     def run_full_analysis(self, collection_names: Optional[list] = None,
                          limit: Optional[int] = None):
@@ -89,6 +116,24 @@ class ErrorAnalysisPipeline:
             
             logger.info(f"Total records analyzed: {summary.get('total_records', 0)}")
             logger.info(f"Unique error types: {summary.get('error_types', {}).get('count', 0)}")
+            
+            # Step 3.5: Store in SQLite/Vector DB (if enabled)
+            if not combined_df.empty:
+                if self.use_sqlite:
+                    logger.info("\n[Step 3.5] Storing data in SQLite...")
+                    try:
+                        self.sqlite_store.store_errors(combined_df)
+                        logger.info("Data stored in SQLite successfully")
+                    except Exception as e:
+                        logger.warning(f"Failed to store in SQLite: {str(e)}")
+                
+                if self.use_vector_db:
+                    logger.info("\n[Step 3.5] Storing embeddings in Vector DB...")
+                    try:
+                        self.vector_store.store_errors(combined_df)
+                        logger.info("Embeddings stored in Vector DB successfully")
+                    except Exception as e:
+                        logger.warning(f"Failed to store in Vector DB: {str(e)}")
             
             # Step 4: Predictive Analytics
             logger.info("\n[Step 4] Running predictive analytics...")

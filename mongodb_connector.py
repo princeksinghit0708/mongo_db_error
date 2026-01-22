@@ -12,6 +12,14 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Import schema system for generic column extraction
+try:
+    from collection_schema import collection_schema
+    HAS_SCHEMA = True
+except ImportError:
+    HAS_SCHEMA = False
+    logger.warning("Collection schema module not found. Using default extraction.")
+
 
 class MongoDBConnector:
     """Class to handle MongoDB connections and data extraction"""
@@ -80,21 +88,28 @@ class MongoDBConnector:
             if limit:
                 cursor = cursor.limit(limit)
             
-            # Convert to list and then DataFrame
+            # Convert to list
             data = list(cursor)
             
             if not data:
                 logger.warning(f"No data found in collection: {collection_name}")
                 return pd.DataFrame()
             
-            df = pd.DataFrame(data)
-            
-            # Convert ObjectId to string for better handling
-            if '_id' in df.columns:
-                df['_id'] = df['_id'].astype(str)
-            
-            # Normalize nested structures (e.g., event.header, event.body)
-            df = self._normalize_nested_structure(df, collection_name)
+            # Use schema-based extraction if available, otherwise use default
+            if HAS_SCHEMA and collection_schema.get_schema(collection_name):
+                logger.info(f"Using schema-based extraction for {collection_name}")
+                df = collection_schema.extract_columns(collection_name, data)
+            else:
+                # Default extraction (backward compatible)
+                logger.info(f"Using default extraction for {collection_name}")
+                df = pd.DataFrame(data)
+                
+                # Convert ObjectId to string for better handling
+                if '_id' in df.columns:
+                    df['_id'] = df['_id'].astype(str)
+                
+                # Normalize nested structures (e.g., event.header, event.body)
+                df = self._normalize_nested_structure(df, collection_name)
             
             # Convert timestamp to datetime if it exists
             timestamp_cols = ['timestamp', 'dataSavedAtTimeStamp', 'eventTransactionTime', 'transactionTime']
