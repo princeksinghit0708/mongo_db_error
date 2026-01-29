@@ -42,6 +42,8 @@ output/
 *.png
 *.jpg
 *.pdf
+# Keep the flow diagram in repo (documentation)
+!mongodb_error_analytics_flow_diagram.png
 
 # Jupyter Notebook
 .ipynb_checkpoints

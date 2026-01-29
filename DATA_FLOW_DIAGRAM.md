@@ -257,7 +257,16 @@ flowchart LR
 | 9 | ErrorAnalyzer | data_dict | patterns, summary, combined_df |
 | 10 | VectorStore (optional) | combined_df | Embeddings in vector DB |
 | 11 | PredictiveAnalytics | combined_df | ML results, predictions, LLM analysis |
-| 12 | ErrorVisualizer + main | patterns, model_results, etc. | output/*.png, *.json, *.txt |
+| 12 | ErrorVisualizer + main | patterns, model_results, etc. | **Final deliverables** (see below) |
+
+### Final deliverables (useful outputs)
+
+| Deliverable | Description |
+|-------------|-------------|
+| **PNG** | Charts: error frequency, temporal trends, dashboard, model performance |
+| **JSON** | `analysis_report.json` — patterns, predictions, recommendations, LLM analysis |
+| **Report (TXT)** | `analysis_report.txt` — human-readable summary for email or sharing |
+| **Email / Report** | Use reports to trigger email alerts or attach to stakeholder reports |
 
 ---
 
