@@ -24,30 +24,32 @@ if __name__ == "__main__":
     # Get your key from: https://makersuite.google.com/app/apikey
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', None)
     
-    # Specify collections to analyze
-    # You can specify multiple collections like: ['abc', 'cde', 'errors']
-    # Or set to None to auto-detect all error collections
-    COLLECTIONS_TO_ANALYZE = ['abc', 'cde']  # Analyze both 'abc' and 'cde' collections
+    # Data source: 'mongodb' = read MongoDB, store in SQLite, run pipeline from SQLite
+    #             'sqlite' = load only from SQLite (run with 'mongodb' first to populate)
+    DATA_SOURCE = os.getenv('DATA_SOURCE', 'mongodb')
     
-    # Optional: Limit number of documents per collection (useful for large datasets)
-    # Set to None to analyze all documents
-    DOCUMENT_LIMIT = None  # e.g., 10000 to limit to first 10k documents
+    # Specify collections to analyze (used when DATA_SOURCE='mongodb')
+    COLLECTIONS_TO_ANALYZE = ['abc', 'cde']
+    DOCUMENT_LIMIT = None  # e.g., 10000 to limit documents per collection
     
     print("=" * 80)
     print("MongoDB Error Predictive Analytics")
     print("=" * 80)
     print(f"\nConfiguration:")
+    print(f"  Data source: {DATA_SOURCE} (pipeline uses SQLite for analysis when use_sqlite=True)")
     print(f"  Database: {DATABASE_NAME}")
-    print(f"  Collections: {COLLECTIONS_TO_ANALYZE if COLLECTIONS_TO_ANALYZE else 'Auto-detect'}")
+    print(f"  Collections: {COLLECTIONS_TO_ANALYZE if DATA_SOURCE == 'mongodb' else 'N/A (loading from SQLite)'}")
     print(f"  Document Limit: {DOCUMENT_LIMIT if DOCUMENT_LIMIT else 'All documents'}")
     print(f"  LLM Analysis: {'Enabled (Gemini)' if GEMINI_API_KEY else 'Disabled'}")
     print("\n" + "=" * 80 + "\n")
     
-    # Create and run the analysis pipeline
+    # Pipeline: use_sqlite=True means store in SQLite and run analysis from SQLite
     pipeline = ErrorAnalysisPipeline(
         connection_string=MONGODB_CONNECTION_STRING,
         database_name=DATABASE_NAME,
-        gemini_api_key=GEMINI_API_KEY
+        gemini_api_key=GEMINI_API_KEY,
+        use_sqlite=True,
+        data_source=DATA_SOURCE
     )
     
     # Run the full analysis

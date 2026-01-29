@@ -42,7 +42,7 @@ class SQLiteStore:
         """Create necessary tables if they don't exist"""
         cursor = self.conn.cursor()
         
-        # Main errors table
+        # Main errors table (columns aligned with pipeline/schema output)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS errors (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,6 +50,7 @@ class SQLiteStore:
                 errorType TEXT,
                 errorCode TEXT,
                 errorDetails TEXT,
+                errorMessage TEXT,
                 timestamp TEXT,
                 rawData TEXT,
                 type TEXT,
@@ -57,12 +58,20 @@ class SQLiteStore:
                 businessCode TEXT,
                 transactionAmount REAL,
                 merchantIdentifier TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_errorType (errorType),
-                INDEX idx_source_collection (source_collection),
-                INDEX idx_timestamp (timestamp)
+                uuid TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # SQLite: create indexes separately
+        for idx_name, col in [("idx_errors_errorType", "errorType"),
+                              ("idx_errors_source_collection", "source_collection"),
+                              ("idx_errors_timestamp", "timestamp")]:
+            try:
+                cursor.execute(
+                    f"CREATE INDEX IF NOT EXISTS {idx_name} ON errors ({col})"
+                )
+            except sqlite3.OperationalError:
+                pass
         
         # Analysis results table
         cursor.execute("""
@@ -88,9 +97,15 @@ class SQLiteStore:
         self.conn.commit()
         logger.info("SQLite tables created/verified")
     
+    def get_table_columns(self, table_name: str = "errors") -> List[str]:
+        """Get list of column names for a table (excluding id, created_at for inserts)."""
+        cursor = self.conn.cursor()
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        return [row[1] for row in cursor.fetchall() if row[1] not in ("id",)]
+    
     def store_errors(self, df: pd.DataFrame, table_name: str = "errors"):
         """
-        Store error DataFrame in SQLite
+        Store error DataFrame in SQLite. Only columns that exist in the table are stored.
         
         Args:
             df: DataFrame with error records
@@ -101,19 +116,48 @@ class SQLiteStore:
             return
         
         try:
-            # Prepare DataFrame for SQLite
-            df_to_store = df.copy()
+            table_cols = self.get_table_columns(table_name)
+            # Keep only columns that exist in the table and in the DataFrame
+            cols_to_store = [c for c in df.columns if c in table_cols]
+            if not cols_to_store:
+                logger.warning("No columns from DataFrame match the errors table. Check schema.")
+                return
             
-            # Convert timestamp to string
+            df_to_store = df[cols_to_store].copy()
+            
+            # Convert timestamp to string for SQLite
             if 'timestamp' in df_to_store.columns:
-                df_to_store['timestamp'] = df_to_store['timestamp'].astype(str)
+                df_to_store['timestamp'] = pd.to_datetime(
+                    df_to_store['timestamp'], errors='coerce'
+                ).astype(str)
             
-            # Store in SQLite
             df_to_store.to_sql(table_name, self.conn, if_exists='append', index=False)
             logger.info(f"Stored {len(df_to_store)} records in SQLite table '{table_name}'")
         except Exception as e:
             logger.error(f"Failed to store errors in SQLite: {str(e)}")
             raise
+    
+    def load_all_errors(self, table_name: str = "errors") -> pd.DataFrame:
+        """
+        Load all error records from SQLite into a DataFrame for the pipeline.
+        
+        Returns:
+            DataFrame with all errors; timestamp column is parsed back to datetime.
+        """
+        try:
+            df = pd.read_sql_query(f"SELECT * FROM {table_name}", self.conn)
+            # Drop SQLite-only columns for pipeline compatibility
+            for drop in ("id", "created_at"):
+                if drop in df.columns:
+                    df = df.drop(columns=[drop])
+            # Parse timestamp for analysis
+            if "timestamp" in df.columns:
+                df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            logger.info(f"Loaded {len(df)} error records from SQLite")
+            return df
+        except Exception as e:
+            logger.error(f"Failed to load errors from SQLite: {str(e)}")
+            return pd.DataFrame()
     
     def query_errors(self, query: str, params: tuple = None) -> pd.DataFrame:
         """

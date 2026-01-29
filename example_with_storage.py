@@ -16,31 +16,34 @@ if __name__ == "__main__":
     DATABASE_NAME = os.getenv('MONGODB_DATABASE', 'your_database_name')
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', None)
     
-    # Storage Options
-    USE_SQLITE = True   # Recommended: Fast structured queries
-    USE_VECTOR_DB = False  # Optional: For semantic search
+    # Data source: 'mongodb' = read MongoDB, store in SQLite, run pipeline from SQLite
+    #             'sqlite' = load only from SQLite (no MongoDB)
+    DATA_SOURCE = os.getenv('DATA_SOURCE', 'mongodb')
     
-    # Collections to analyze
+    USE_SQLITE = True   # Pipeline uses SQLite for analysis (store + load)
+    USE_VECTOR_DB = False  # Optional: semantic search
+    
     COLLECTIONS_TO_ANALYZE = ['abc', 'cde']
     
     print("=" * 80)
     print("MongoDB Error Predictive Analytics with Storage Options")
     print("=" * 80)
     print(f"\nConfiguration:")
+    print(f"  Data source: {DATA_SOURCE}")
     print(f"  Database: {DATABASE_NAME}")
-    print(f"  Collections: {COLLECTIONS_TO_ANALYZE}")
-    print(f"  SQLite Storage: {'Enabled' if USE_SQLITE else 'Disabled'}")
-    print(f"  Vector DB Storage: {'Enabled' if USE_VECTOR_DB else 'Disabled'}")
+    print(f"  Collections: {COLLECTIONS_TO_ANALYZE if DATA_SOURCE == 'mongodb' else 'N/A'}")
+    print(f"  SQLite (pipeline source): {'Enabled' if USE_SQLITE else 'Disabled'}")
+    print(f"  Vector DB: {'Enabled' if USE_VECTOR_DB else 'Disabled'}")
     print(f"  LLM Analysis: {'Enabled (Gemini)' if GEMINI_API_KEY else 'Disabled'}")
     print("\n" + "=" * 80 + "\n")
     
-    # Create pipeline with storage options
     pipeline = ErrorAnalysisPipeline(
         connection_string=MONGODB_CONNECTION_STRING,
         database_name=DATABASE_NAME,
         gemini_api_key=GEMINI_API_KEY,
         use_sqlite=USE_SQLITE,
-        use_vector_db=USE_VECTOR_DB
+        use_vector_db=USE_VECTOR_DB,
+        data_source=DATA_SOURCE
     )
     
     # Run analysis

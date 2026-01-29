@@ -7,7 +7,7 @@ import os
 import json
 import pandas as pd
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict
 import logging
 
 from mongodb_connector import MongoDBConnector
@@ -41,22 +41,30 @@ class ErrorAnalysisPipeline:
     def __init__(self, connection_string: str, database_name: str, 
                  gemini_api_key: Optional[str] = None,
                  use_sqlite: bool = True,
-                 use_vector_db: bool = False):
+                 use_vector_db: bool = False,
+                 data_source: str = "mongodb"):
         """
         Initialize the pipeline
         
         Args:
-            connection_string: MongoDB connection string
+            connection_string: MongoDB connection string (when data_source='mongodb')
             database_name: Name of the database
             gemini_api_key: Optional Google Gemini API key for LLM analysis
-            use_sqlite: Whether to store data in SQLite (default: True)
+            use_sqlite: Whether to store/load data via SQLite (default: True)
             use_vector_db: Whether to use vector DB for semantic search (default: False)
+            data_source: 'mongodb' = read MongoDB then use SQLite for pipeline;
+                         'sqlite' = load only from SQLite (no MongoDB)
         """
         self.connection_string = connection_string
         self.database_name = database_name
         self.gemini_api_key = gemini_api_key
+        self.data_source = data_source
         self.use_sqlite = use_sqlite and HAS_SQLITE
         self.use_vector_db = use_vector_db and HAS_VECTOR_DB
+        if data_source == "sqlite":
+            self.use_sqlite = True
+            if not HAS_SQLITE:
+                raise ImportError("SQLite store required when data_source='sqlite'")
         
         self.connector = None
         self.analyzer = None
@@ -71,33 +79,54 @@ class ErrorAnalysisPipeline:
         if self.use_vector_db:
             self.vector_store = VectorStore(db_type="chroma")
         
+    @staticmethod
+    def _dataframe_to_data_dict(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+        """Split combined DataFrame by source_collection for ErrorAnalyzer."""
+        if df.empty or "source_collection" not in df.columns:
+            return {}
+        return {
+            name: group.copy()
+            for name, group in df.groupby("source_collection", sort=False)
+        }
+    
     def run_full_analysis(self, collection_names: Optional[list] = None,
                          limit: Optional[int] = None):
         """
-        Run the complete analysis pipeline
+        Run the complete analysis pipeline. When use_sqlite is True, the pipeline
+        uses data from SQLite for analysis (after storing from MongoDB if data_source='mongodb').
         
         Args:
-            collection_names: Optional list of specific collections to analyze
+            collection_names: Optional list of specific collections (used when data_source='mongodb')
             limit: Optional limit on documents per collection
         """
         logger.info("=" * 60)
         logger.info("Starting MongoDB Error Analysis Pipeline")
         logger.info("=" * 60)
         
-        # Step 1: Connect to MongoDB
-        logger.info("\n[Step 1] Connecting to MongoDB...")
-        self.connector = MongoDBConnector(self.connection_string, self.database_name)
-        if not self.connector.connect():
-            logger.error("Failed to connect to MongoDB. Exiting.")
-            return
+        data_dict = {}
+        combined_df = pd.DataFrame()
         
-        try:
-            # Step 2: Read collections
+        if self.data_source == "sqlite":
+            # Load only from SQLite; no MongoDB
+            logger.info("\n[Step 1] Loading data from SQLite...")
+            combined_df = self.sqlite_store.load_all_errors()
+            if combined_df.empty:
+                logger.error("No data found in SQLite. Run with data_source='mongodb' first.")
+                return
+            data_dict = self._dataframe_to_data_dict(combined_df)
+            logger.info(f"Loaded {len(data_dict)} collections from SQLite ({len(combined_df)} records)")
+        else:
+            # Read from MongoDB, optionally store and then use SQLite for pipeline
+            logger.info("\n[Step 1] Connecting to MongoDB...")
+            self.connector = MongoDBConnector(self.connection_string, self.database_name)
+            if not self.connector.connect():
+                logger.error("Failed to connect to MongoDB. Exiting.")
+                return
+            
             logger.info("\n[Step 2] Reading MongoDB collections...")
             if collection_names:
                 data_dict = self.connector.read_multiple_collections(collection_names, limit=limit)
             else:
-                # Auto-detect error collections
                 data_dict = self.connector.get_error_collections()
             
             if not data_dict:
@@ -106,38 +135,48 @@ class ErrorAnalysisPipeline:
             
             logger.info(f"Successfully read {len(data_dict)} collections")
             
-            # Step 3: Analyze error patterns
+            if self.use_sqlite:
+                # Store in SQLite, then load from SQLite for pipeline
+                combined_for_store = pd.concat(
+                    [data_dict[c] for c in data_dict],
+                    ignore_index=True
+                )
+                logger.info("\n[Step 2.5] Storing data in SQLite...")
+                try:
+                    self.sqlite_store.store_errors(combined_for_store)
+                    combined_df = self.sqlite_store.load_all_errors()
+                    data_dict = self._dataframe_to_data_dict(combined_df)
+                    logger.info("Pipeline will use data from SQLite")
+                except Exception as e:
+                    logger.warning(f"SQLite store/load failed, using MongoDB data: {e}")
+                    combined_df = pd.concat([data_dict[c] for c in data_dict], ignore_index=True)
+            else:
+                combined_df = pd.concat([data_dict[c] for c in data_dict], ignore_index=True)
+        
+        try:
+            # Step 3: Analyze error patterns (using data from SQLite or MongoDB)
             logger.info("\n[Step 3] Analyzing error patterns...")
             self.analyzer = ErrorAnalyzer(data_dict)
             
-            # Get error patterns
             patterns = self.analyzer.get_error_patterns()
             summary = self.analyzer.get_summary_statistics()
             
             logger.info(f"Total records analyzed: {summary.get('total_records', 0)}")
             logger.info(f"Unique error types: {summary.get('error_types', {}).get('count', 0)}")
             
-            # Step 3.5: Store in SQLite/Vector DB (if enabled)
-            if not combined_df.empty:
-                if self.use_sqlite:
-                    logger.info("\n[Step 3.5] Storing data in SQLite...")
-                    try:
-                        self.sqlite_store.store_errors(combined_df)
-                        logger.info("Data stored in SQLite successfully")
-                    except Exception as e:
-                        logger.warning(f"Failed to store in SQLite: {str(e)}")
-                
-                if self.use_vector_db:
-                    logger.info("\n[Step 3.5] Storing embeddings in Vector DB...")
-                    try:
-                        self.vector_store.store_errors(combined_df)
-                        logger.info("Embeddings stored in Vector DB successfully")
-                    except Exception as e:
-                        logger.warning(f"Failed to store in Vector DB: {str(e)}")
+            combined_df = self.analyzer.combined_df
+            
+            # Step 3.5: Vector DB (optional)
+            if self.use_vector_db and not combined_df.empty:
+                logger.info("\n[Step 3.5] Storing embeddings in Vector DB...")
+                try:
+                    self.vector_store.store_errors(combined_df)
+                    logger.info("Embeddings stored in Vector DB successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to store in Vector DB: {str(e)}")
             
             # Step 4: Predictive Analytics
             logger.info("\n[Step 4] Running predictive analytics...")
-            combined_df = self.analyzer.combined_df
             
             if not combined_df.empty:
                 self.predictor = PredictiveAnalytics(combined_df, self.gemini_api_key)
@@ -192,8 +231,8 @@ class ErrorAnalysisPipeline:
             logger.info(f"Results saved in 'output' directory")
             
         finally:
-            # Cleanup
-            self.connector.disconnect()
+            if self.connector:
+                self.connector.disconnect()
     
     def _generate_visualizations(self, patterns: dict, model_results: dict, 
                                 feature_importance: pd.DataFrame):
@@ -373,11 +412,16 @@ def main():
     # Optional: Limit documents per collection (None = all)
     DOCUMENT_LIMIT = None  # e.g., 10000
     
-    # Create and run pipeline
+    # data_source: 'mongodb' = read MongoDB, store in SQLite, then run pipeline from SQLite
+    #              'sqlite' = load only from SQLite (no MongoDB; run with 'mongodb' first)
+    DATA_SOURCE = os.getenv('DATA_SOURCE', 'mongodb')
+    
     pipeline = ErrorAnalysisPipeline(
         connection_string=MONGODB_CONNECTION_STRING,
         database_name=DATABASE_NAME,
-        gemini_api_key=GEMINI_API_KEY
+        gemini_api_key=GEMINI_API_KEY,
+        use_sqlite=True,
+        data_source=DATA_SOURCE
     )
     
     pipeline.run_full_analysis(
